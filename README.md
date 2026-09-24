@@ -2,7 +2,7 @@
 
 Aviationstack MCP — global flight tracking + airport / airline / route reference data. Free tier: 100 req/month.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1476+ live data sources.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1679+ live data sources.
 
 ## Tools
 
@@ -21,6 +21,15 @@ Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents 
 ### Free-plan limits
 
 Only the `flights` endpoint works on the free tier. `airports`, `airlines`, `cities`, `countries`, `routes` return HTTP 403 `function_access_restricted`. Upgrade to Basic (~$50/mo) to unlock them. Free plan is HTTP-only (no https) — the pack already uses `http://`.
+
+The free plan is also capped at **100 requests per month**, and once that is spent every
+endpoint answers 429 — including the ones the tier would otherwise allow. As of 2026-08-28
+the shared key is in that state (`routes` and `airports`, zero successes in seven days).
+
+**Reading a 429 here:** Aviationstack labels the monthly-allowance refusal with the code
+`rate_limit_reached` and only says "monthly" in the message text, so the code name argues
+for a burst limit that clears in seconds when the truth is a wall that lasts until the plan
+renews. The pack branches on the message, not the code. Fleet #577.
 
 ## Data source
 
@@ -70,9 +79,45 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1476+ data sources. The
+Both URLs reach the same gateway and the same 1679+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
+
+## No MCP client? Call it over HTTP
+
+```bash
+curl -X POST https://gateway.pipeworx.io/v1/tools/flights \
+  -H 'Content-Type: application/json' \
+  -d '{"flight_iata":"AA100","dep_iata":"JFK","arr_iata":"LAX"}'
+```
+
+No account needed for the first calls. Inspect any tool: `GET https://gateway.pipeworx.io/v1/tools/flights`. Find one: `POST https://gateway.pipeworx.io/v1/tools/search_packs` with `{"query":"..."}`.
+
+## Standalone (no gateway account)
+
+This package also runs as a local stdio MCP server — no Pipeworx account, no
+gateway round-trip:
+
+```json
+{
+  "mcpServers": {
+    "aviationstack": {
+      "command": "npx",
+      "args": ["-y", "@pipeworx/mcp-aviationstack"]
+    }
+  }
+}
+```
+
+Or run it directly to confirm it starts:
+
+```bash
+npx -y @pipeworx/mcp-aviationstack
+```
+
+It speaks MCP over stdin/stdout and answers `initialize`/`tools/list`/`tools/call`
+for **only** this pack's tools — none of the shared meta-tools the gateway
+connection above adds. Same source, same tools, no ask_pipeworx routing.
 
 ## Using with ask_pipeworx
 
@@ -93,13 +138,3 @@ The gateway picks the right tool and fills the arguments automatically.
 ## License
 
 MIT
-
-## No MCP client? Call it over HTTP
-
-```bash
-curl -X POST https://gateway.pipeworx.io/v1/tools/flights \
-  -H 'Content-Type: application/json' \
-  -d '{"flight_iata":"AA100","dep_iata":"JFK","arr_iata":"LAX"}'
-```
-
-No account needed for the first calls. Inspect any tool: `GET https://gateway.pipeworx.io/v1/tools/flights`. Find one: `POST https://gateway.pipeworx.io/v1/tools/search_packs` with `{"query":"..."}`.
