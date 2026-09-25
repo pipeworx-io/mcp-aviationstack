@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-aviationstack",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Aviationstack MCP — global flight + airport + airline data",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-cddd59a2d1262a1246373bfbd7b116dc1318739892b5c05bb482871d48dc6b09",
-    "sourceCommit": "60f04b68c347e970c6be94a53439d1364061fc06"
+    "sourceHash": "v1-17d9a3d7acdd3fb0a4f2e81daafc56c2e3068f281d2a5e064fece8a70284b339",
+    "sourceCommit": "454041882179fae560c06e770b6b7a2f33970015"
   }
 }
