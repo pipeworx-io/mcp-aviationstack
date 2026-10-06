@@ -777,6 +777,109 @@ const tools: McpToolExport['tools'] = [
       },
     },
   },
+  {
+    // apilayer emailed developer@mojibake.ai on 2026-10-06 ("What the new
+    // /flightsFuture range changes for your app"): they opened this endpoint
+    // to cover the next 7 days for itinerary/booking views. Vendor spec:
+    // https://api.swaggerhub.com/apis/apilayer-863/AviationstackAPI/1.0.0/swagger.json
+    // (paths./v1/flightsFuture — iataCode + type + date all required; date
+    // format YYYY-MM-DD). The 7-day window is the vendor's own notice, not a
+    // field the swagger spec encodes, so it is enforced here rather than left
+    // to a far-future call failing late and unexplained (fleet #2700).
+    name: 'aviationstack_future_flights',
+    description:
+      "Scheduled future flights at one airport, from Aviationstack's /flightsFuture endpoint — what flies a route on a day next week. Requires an IATA airport code, a direction (departure or arrival), and a date; returns each flight's number, airline, aircraft model, and scheduled terminal/gate/time. Aviationstack's booking-view window for this endpoint currently covers only the next 7 days (apilayer notice, 2026-10-06): date must be between tomorrow and 7 days from today — a date outside that window is refused before the call is made, not after a wasted round trip.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        iataCode: { type: 'string', description: '3-letter IATA airport code whose schedule to look up (e.g. "JFK")' },
+        type: {
+          type: 'string',
+          enum: ['departure', 'arrival'],
+          description: 'Whether to return flights scheduled to depart or arrive at iataCode',
+        },
+        date: {
+          type: 'string',
+          description:
+            'Future date, format YYYY-MM-DD, must fall within tomorrow through 7 days from today (UTC) — Aviationstack\'s current flightsFuture window.',
+        },
+        airline_iata: { type: 'string', description: 'Filter by airline IATA code' },
+        airline_icao: { type: 'string', description: 'Filter by airline ICAO code' },
+        flight_number: { type: 'string', description: 'Filter by flight number' },
+        limit: { type: 'number', description: '1-100 (default 100)' },
+        offset: { type: 'number', description: '0-based offset' },
+      },
+      required: ['iataCode', 'type', 'date'],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        pagination: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            offset: { type: 'number' },
+            count: { type: 'number' },
+            total: { type: 'number' },
+          },
+        },
+        data: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              weekday: { type: ['string', 'null'], description: 'ISO weekday number 1-7 as a string' },
+              departure: {
+                type: 'object',
+                properties: {
+                  iataCode: { type: ['string', 'null'] },
+                  icaoCode: { type: ['string', 'null'] },
+                  terminal: { type: ['string', 'null'] },
+                  gate: { type: ['string', 'null'] },
+                  scheduledTime: { type: ['string', 'null'], description: 'Local time, HH:MM' },
+                },
+              },
+              arrival: {
+                type: 'object',
+                properties: {
+                  iataCode: { type: ['string', 'null'] },
+                  icaoCode: { type: ['string', 'null'] },
+                  terminal: { type: ['string', 'null'] },
+                  gate: { type: ['string', 'null'] },
+                  scheduledTime: { type: ['string', 'null'], description: 'Local time, HH:MM' },
+                },
+              },
+              aircraft: {
+                type: ['object', 'null'],
+                properties: {
+                  modelCode: { type: ['string', 'null'] },
+                  modelText: { type: ['string', 'null'] },
+                },
+              },
+              airline: {
+                type: 'object',
+                properties: {
+                  name: { type: ['string', 'null'] },
+                  iataCode: { type: ['string', 'null'] },
+                  icaoCode: { type: ['string', 'null'] },
+                },
+              },
+              flight: {
+                type: 'object',
+                properties: {
+                  number: { type: ['string', 'null'] },
+                  iataNumber: { type: ['string', 'null'] },
+                  icaoNumber: { type: ['string', 'null'] },
+                },
+              },
+              codeshared: { type: ['object', 'null'] },
+            },
+          },
+        },
+        data_as_of: { type: 'string', description: 'ISO timestamp when this response was fetched live from Aviationstack' },
+      },
+    },
+  },
 ];
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -786,6 +889,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       'Aviationstack requires an API key. Contact the operator about platform credentials, or BYO via ?_apiKey=<key> after registering at https://aviationstack.com/signup/free.',
     );
   }
+
+  if (name === 'aviationstack_future_flights') {
+    return getFutureFlights(apiKey, args);
+  }
+
   const path = `/${name}`;
   const params = new URLSearchParams({ access_key: apiKey });
   for (const [k, v] of Object.entries(args)) {
@@ -793,6 +901,56 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     params.set(k, String(v));
   }
   return avsGet(`${path}?${params}`);
+}
+
+/**
+ * Validate the date is inside Aviationstack's current flightsFuture window
+ * (tomorrow through 7 days from today, UTC — apilayer notice, 2026-10-06)
+ * BEFORE spending a call on it. Refusing early and by name beats a vendor
+ * 200-with-empty-data or a late 4xx for a date the caller had no way to know
+ * was out of range.
+ */
+function assertWithinFutureWindow(date: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`Aviationstack future_flights: date must be YYYY-MM-DD, got "${date}".`);
+  }
+  const requested = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(requested)) {
+    throw new Error(`Aviationstack future_flights: "${date}" is not a valid calendar date.`);
+  }
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const DAY_MS = 86_400_000;
+  const minDate = todayUtc + DAY_MS; // tomorrow
+  const maxDate = todayUtc + 7 * DAY_MS; // today + 7
+  if (requested < minDate || requested > maxDate) {
+    const min = new Date(minDate).toISOString().slice(0, 10);
+    const max = new Date(maxDate).toISOString().slice(0, 10);
+    throw new Error(
+      `Aviationstack future_flights: "${date}" is outside the vendor's current flightsFuture window. Aviationstack opened this endpoint to only the next 7 days (apilayer notice, 2026-10-06) — valid range today is ${min} through ${max}. Pass a date inside that range.`,
+    );
+  }
+}
+
+async function getFutureFlights(apiKey: string, args: Record<string, unknown>): Promise<unknown> {
+  const iataCode = (args.iataCode as string | undefined)?.trim();
+  const type = args.type as string | undefined;
+  const date = (args.date as string | undefined)?.trim();
+  if (!iataCode) throw new Error('Aviationstack future_flights: iataCode is required (3-letter airport code, e.g. "JFK").');
+  if (type !== 'departure' && type !== 'arrival') {
+    throw new Error(`Aviationstack future_flights: type must be "departure" or "arrival", got "${type ?? ''}".`);
+  }
+  if (!date) throw new Error('Aviationstack future_flights: date is required (YYYY-MM-DD).');
+  assertWithinFutureWindow(date);
+
+  const params = new URLSearchParams({ access_key: apiKey, iataCode, type, date });
+  for (const k of ['airline_iata', 'airline_icao', 'flight_number', 'limit', 'offset'] as const) {
+    const v = args[k];
+    if (v === undefined || v === null || v === '') continue;
+    params.set(k, String(v));
+  }
+  const data = (await avsGet(`/flightsFuture?${params}`)) as Record<string, unknown>;
+  return { ...data, data_as_of: new Date().toISOString() };
 }
 
 /**
